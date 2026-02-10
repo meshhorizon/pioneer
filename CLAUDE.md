@@ -56,14 +56,40 @@ bun start            # Build + run
 bun run lint         # TypeScript type check
 ```
 
-## Development Workflow
+## Development Workflow (Git Worktrees)
 
-1. Create a feature branch from `main`
-2. Implement the feature (keep PRs focused and small)
-3. Ensure `bun run lint` passes (TypeScript strict mode)
-4. Commit with descriptive message
-5. Push and create PR against `main`
-6. CI must pass before merge
+Background workers MUST use git worktrees for isolated development:
+
+```bash
+# From the main repo directory, create a worktree for your feature branch:
+git worktree add ../pioneer-wt-<feature-name> -b feature/<feature-name> main
+
+# Work inside the worktree directory:
+cd ../pioneer-wt-<feature-name>
+bun install
+
+# Make changes, then commit and push:
+git add <files>
+git commit -m "feat: description"
+git push -u origin feature/<feature-name>
+
+# Create PR:
+gh pr create --title "feat: ..." --body "..."
+
+# Clean up worktree when done:
+cd /Users/bedwards/vibe/meshhorizon/pioneer
+git worktree remove ../pioneer-wt-<feature-name>
+```
+
+### Workflow Steps
+1. Create a git worktree with a feature branch from `main`
+2. Install dependencies with `bun install` in the worktree
+3. Implement the feature (keep PRs focused and small)
+4. Ensure `./node_modules/.bin/tsc --noEmit` passes (TypeScript strict mode)
+5. Commit with descriptive message
+6. Push and create PR against `main`
+7. CI must pass before merge
+8. Clean up worktree after PR is merged
 
 ## Code Style
 
