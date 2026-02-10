@@ -155,11 +155,34 @@ body {
 
 .url-container {
 	flex: 1;
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+
+.url-security-icon {
+	position: absolute;
+	left: 12px;
+	z-index: 1;
+	font-size: 14px;
+	pointer-events: none;
+}
+
+.url-security-icon::before {
+	content: "🔍";
+}
+
+.url-security-icon.secure::before {
+	content: "🔒";
+}
+
+.url-security-icon.insecure::before {
+	content: "⚠️";
 }
 
 #url-bar {
 	width: 100%;
-	padding: 8px 12px;
+	padding: 8px 12px 8px 32px;
 	border: 1px solid #ddd;
 	border-radius: 20px;
 	font-size: 14px;
@@ -172,6 +195,102 @@ body {
 	background: white;
 	border-color: #4a90e2;
 	box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
+}
+
+/* URL Suggestions Dropdown */
+.url-suggestions {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	background: white;
+	border: 1px solid #ddd;
+	border-radius: 8px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+	margin-top: 4px;
+	max-height: 300px;
+	overflow-y: auto;
+	z-index: 1000;
+}
+
+.url-suggestions.hidden {
+	display: none;
+}
+
+.url-suggestion-item {
+	display: flex;
+	align-items: center;
+	padding: 8px 12px;
+	cursor: pointer;
+	gap: 8px;
+	transition: background 0.1s;
+}
+
+.url-suggestion-item:hover,
+.url-suggestion-item.selected {
+	background: #f0f4ff;
+}
+
+.url-suggestion-item:first-child {
+	border-radius: 8px 8px 0 0;
+}
+
+.url-suggestion-item:last-child {
+	border-radius: 0 0 8px 8px;
+}
+
+.suggestion-icon {
+	font-size: 14px;
+	color: #666;
+	flex-shrink: 0;
+}
+
+.suggestion-text {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 13px;
+	color: #333;
+}
+
+.suggestion-url {
+	font-size: 11px;
+	color: #888;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 200px;
+}
+
+/* Navigation Progress Bar */
+.nav-progress {
+	height: 3px;
+	background: transparent;
+	position: relative;
+	overflow: hidden;
+}
+
+.nav-progress.hidden {
+	display: none;
+}
+
+.nav-progress-bar {
+	height: 100%;
+	background: linear-gradient(90deg, #4a90e2, #63b3ed);
+	width: 0%;
+	transition: width 0.3s ease;
+	border-radius: 0 2px 2px 0;
+}
+
+@keyframes progress-indeterminate {
+	0% { width: 0%; margin-left: 0%; }
+	50% { width: 30%; margin-left: 35%; }
+	100% { width: 0%; margin-left: 100%; }
+}
+
+.nav-progress-bar.indeterminate {
+	animation: progress-indeterminate 1.5s ease-in-out infinite;
 }
 
 .nav-actions {
