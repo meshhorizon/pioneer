@@ -31,16 +31,34 @@ const rpc = Electroview.defineRPC<any>({
 // @ts-expect-error - electrobun is used by webview tags for RPC
 const electrobun = new Electrobun.Electroview({ rpc });
 
+interface TabInfo {
+	id: string;
+	title: string;
+	url: string;
+	canGoBack: boolean;
+	canGoForward: boolean;
+	isLoading: boolean;
+	favicon?: string;
+	isPinned?: boolean;
+}
+
+interface BookmarkInfo {
+	id: string;
+	title: string;
+	url: string;
+	createdAt: number;
+}
+
 class MultitabBrowser {
-	private tabs: Map<string, any> = new Map();
+	private tabs: Map<string, TabInfo> = new Map();
+	private tabOrder: string[] = [];
 	private webviews: Map<string, WebviewTagElement> = new Map();
 	private activeTabId: string | null = null;
-	private bookmarks: Map<string, any> = new Map();
+	private bookmarks: Map<string, BookmarkInfo> = new Map();
+	private dragState: { tabId: string; startX: number; element: HTMLElement } | null = null;
 
 	constructor() {
-		// Store reference globally for RPC message handlers
 		(window as any).multitabBrowser = this;
-
 		this.initializeUI();
 		this.loadBookmarks();
 	}
@@ -58,7 +76,6 @@ class MultitabBrowser {
 				const url = urlBar.value.trim();
 				if (url) {
 					try {
-						// Process URL
 						let processedUrl = url;
 						if (!url.startsWith("http://") && !url.startsWith("https://")) {
 							if (url.includes(".") && !url.includes(" ")) {
@@ -68,19 +85,16 @@ class MultitabBrowser {
 							}
 						}
 
-						// If no active tab, create a new one with this URL
 						if (!this.activeTabId) {
 							await this.createNewTab(processedUrl);
 							return;
 						}
 
-						// Navigate the existing webview
 						const webview = this.webviews.get(this.activeTabId) as any;
 						if (webview) {
 							webview.src = processedUrl;
 						}
 
-						// Update tab info
 						const tab = this.tabs.get(this.activeTabId);
 						if (tab) {
 							tab.url = processedUrl;
@@ -108,38 +122,30 @@ class MultitabBrowser {
 			}
 		});
 
-		document
-			.getElementById("forward-btn")
-			?.addEventListener("click", async () => {
-				if (this.activeTabId) {
-					const webview = this.webviews.get(this.activeTabId) as any;
-					if (webview && webview.goForward) {
-						webview.goForward();
-					}
+		document.getElementById("forward-btn")?.addEventListener("click", async () => {
+			if (this.activeTabId) {
+				const webview = this.webviews.get(this.activeTabId) as any;
+				if (webview && webview.goForward) {
+					webview.goForward();
 				}
-			});
+			}
+		});
 
-		document
-			.getElementById("reload-btn")
-			?.addEventListener("click", async () => {
-				if (this.activeTabId) {
-					const webview = this.webviews.get(this.activeTabId) as any;
-					if (webview && webview.reload) {
-						webview.reload();
-					}
+		document.getElementById("reload-btn")?.addEventListener("click", async () => {
+			if (this.activeTabId) {
+				const webview = this.webviews.get(this.activeTabId) as any;
+				if (webview && webview.reload) {
+					webview.reload();
 				}
-			});
+			}
+		});
 
 		document.getElementById("home-btn")?.addEventListener("click", async () => {
 			const homeUrl = "https://electrobun.dev";
-
 			if (this.activeTabId) {
-				// Navigate existing tab to home
 				const webview = this.webviews.get(this.activeTabId) as any;
 				if (webview) {
 					webview.src = homeUrl;
-
-					// Update tab info
 					const tab = this.tabs.get(this.activeTabId);
 					if (tab) {
 						tab.url = homeUrl;
@@ -147,7 +153,6 @@ class MultitabBrowser {
 					}
 				}
 			} else {
-				// Create new tab with home URL
 				await this.createNewTab(homeUrl);
 			}
 		});
@@ -159,19 +164,16 @@ class MultitabBrowser {
 
 		// Bookmarks menu button
 		const bookmarksMenuBtn = document.getElementById("bookmarks-menu-btn");
-		console.log("Found bookmarks menu button:", bookmarksMenuBtn);
 		bookmarksMenuBtn?.addEventListener("click", (e) => {
-			console.log("Bookmarks menu button clicked");
 			e.stopPropagation();
 			this.toggleBookmarksMenu();
 		});
 
-		// Reset bookmarks button (delegate to handle dynamically added buttons)
+		// Reset bookmarks button
 		document.addEventListener("click", (e) => {
 			if ((e.target as HTMLElement)?.id === "reset-bookmarks-btn") {
 				e.preventDefault();
 				e.stopPropagation();
-				console.log("Reset button clicked");
 				this.resetBookmarks();
 			}
 		});
@@ -191,63 +193,211 @@ class MultitabBrowser {
 			}
 		});
 
-		// Keyboard shortcuts - support both Cmd (Mac) and Ctrl (Windows/Linux)
+		// Keyboard shortcuts
 		document.addEventListener("keydown", (e) => {
 			const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
-			const modifierPressed = isMac ? e.metaKey : e.ctrlKey;
+			const mod = isMac ? e.metaKey : e.ctrlKey;
 
-			// Also support the opposite modifier for cross-platform compatibility
-			const altModifierPressed = isMac ? e.ctrlKey : e.metaKey;
-
-			if (
-				(modifierPressed || altModifierPressed) &&
-				e.key.toLowerCase() === "t"
-			) {
+			if (mod && e.key.toLowerCase() === "t") {
 				e.preventDefault();
 				this.createNewTab();
 			}
 
-			if (
-				(modifierPressed || altModifierPressed) &&
-				e.key.toLowerCase() === "w"
-			) {
+			if (mod && e.key.toLowerCase() === "w") {
 				e.preventDefault();
 				if (this.activeTabId) {
 					this.closeTab(this.activeTabId);
 				}
 			}
 
-			if (
-				(modifierPressed || altModifierPressed) &&
-				e.key.toLowerCase() === "l"
-			) {
+			if (mod && e.key.toLowerCase() === "l") {
 				e.preventDefault();
 				const urlBar = document.getElementById("url-bar") as HTMLInputElement;
 				urlBar?.focus();
 				urlBar?.select();
 			}
+
+			if (mod && e.key.toLowerCase() === "d") {
+				e.preventDefault();
+				if (this.activeTabId) {
+					this.duplicateTab(this.activeTabId);
+				}
+			}
+
+			// Tab switching: Cmd/Ctrl + 1-9
+			if (mod && e.key >= "1" && e.key <= "9") {
+				e.preventDefault();
+				const index = parseInt(e.key) - 1;
+				if (index < this.tabOrder.length) {
+					this.switchToTab(this.tabOrder[index]);
+				}
+			}
+
+			// Next/previous tab: Cmd/Ctrl + Shift + ] / [
+			if (mod && e.shiftKey && e.key === "]") {
+				e.preventDefault();
+				this.switchToNextTab();
+			}
+			if (mod && e.shiftKey && e.key === "[") {
+				e.preventDefault();
+				this.switchToPrevTab();
+			}
+
+			// Pin tab: Cmd/Ctrl + Shift + P
+			if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
+				e.preventDefault();
+				if (this.activeTabId) {
+					this.togglePinTab(this.activeTabId);
+				}
+			}
 		});
+
+		// Tab drag-and-drop on the tab bar
+		const tabsContainer = document.getElementById("tabs-container");
+		if (tabsContainer) {
+			tabsContainer.addEventListener("mousedown", (e) => this.onTabDragStart(e));
+			document.addEventListener("mousemove", (e) => this.onTabDragMove(e));
+			document.addEventListener("mouseup", () => this.onTabDragEnd());
+		}
 
 		// Show welcome screen initially
 		this.showWelcomeScreen();
 	}
 
+	// --- Tab drag-and-drop ---
+	private onTabDragStart(e: MouseEvent): void {
+		const tabEl = (e.target as HTMLElement).closest(".tab") as HTMLElement;
+		if (!tabEl || (e.target as HTMLElement).classList.contains("tab-close")) return;
+		const tabId = tabEl.dataset["tabId"];
+		if (!tabId) return;
+
+		// Don't allow dragging pinned tabs past unpinned and vice versa
+		this.dragState = { tabId, startX: e.clientX, element: tabEl };
+		tabEl.classList.add("dragging");
+	}
+
+	private onTabDragMove(e: MouseEvent): void {
+		if (!this.dragState) return;
+		const dx = e.clientX - this.dragState.startX;
+		this.dragState.element.style.transform = `translateX(${dx}px)`;
+		this.dragState.element.style.zIndex = "100";
+
+		// Find the tab we're hovering over
+		const tabs = Array.from(document.querySelectorAll(".tab:not(.dragging)"));
+		for (const tab of tabs) {
+			const rect = tab.getBoundingClientRect();
+			const midX = rect.left + rect.width / 2;
+			if (e.clientX > rect.left && e.clientX < rect.right) {
+				const dragIdx = this.tabOrder.indexOf(this.dragState.tabId);
+				const hoverId = (tab as HTMLElement).dataset["tabId"];
+				if (!hoverId) continue;
+				const hoverIdx = this.tabOrder.indexOf(hoverId);
+
+				if (dragIdx !== -1 && hoverIdx !== -1 && dragIdx !== hoverIdx) {
+					// Check pin boundary - don't mix pinned and unpinned
+					const dragTab = this.tabs.get(this.dragState.tabId);
+					const hoverTab = this.tabs.get(hoverId);
+					if (dragTab?.isPinned !== hoverTab?.isPinned) continue;
+
+					// Swap in order
+					if (e.clientX < midX && dragIdx > hoverIdx) {
+						this.tabOrder.splice(dragIdx, 1);
+						this.tabOrder.splice(hoverIdx, 0, this.dragState.tabId);
+						this.renderAllTabs();
+						break;
+					} else if (e.clientX >= midX && dragIdx < hoverIdx) {
+						this.tabOrder.splice(dragIdx, 1);
+						this.tabOrder.splice(hoverIdx, 0, this.dragState.tabId);
+						this.renderAllTabs();
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	private onTabDragEnd(): void {
+		if (!this.dragState) return;
+		this.dragState.element.style.transform = "";
+		this.dragState.element.style.zIndex = "";
+		this.dragState.element.classList.remove("dragging");
+		this.dragState = null;
+	}
+
+	// --- Tab order helpers ---
+	private switchToNextTab(): void {
+		if (!this.activeTabId || this.tabOrder.length < 2) return;
+		const idx = this.tabOrder.indexOf(this.activeTabId);
+		const nextIdx = (idx + 1) % this.tabOrder.length;
+		this.switchToTab(this.tabOrder[nextIdx]);
+	}
+
+	private switchToPrevTab(): void {
+		if (!this.activeTabId || this.tabOrder.length < 2) return;
+		const idx = this.tabOrder.indexOf(this.activeTabId);
+		const prevIdx = (idx - 1 + this.tabOrder.length) % this.tabOrder.length;
+		this.switchToTab(this.tabOrder[prevIdx]);
+	}
+
+	private togglePinTab(tabId: string): void {
+		const tab = this.tabs.get(tabId);
+		if (!tab) return;
+		tab.isPinned = !tab.isPinned;
+
+		// Move pinned tabs to the front of the order
+		const idx = this.tabOrder.indexOf(tabId);
+		if (idx === -1) return;
+		this.tabOrder.splice(idx, 1);
+
+		if (tab.isPinned) {
+			// Insert after last pinned tab
+			let insertIdx = 0;
+			for (let i = 0; i < this.tabOrder.length; i++) {
+				if (this.tabs.get(this.tabOrder[i])?.isPinned) {
+					insertIdx = i + 1;
+				} else {
+					break;
+				}
+			}
+			this.tabOrder.splice(insertIdx, 0, tabId);
+		} else {
+			// Insert after last pinned tab
+			let insertIdx = 0;
+			for (let i = 0; i < this.tabOrder.length; i++) {
+				if (this.tabs.get(this.tabOrder[i])?.isPinned) {
+					insertIdx = i + 1;
+				}
+			}
+			this.tabOrder.splice(insertIdx, 0, tabId);
+		}
+
+		this.renderAllTabs();
+	}
+
+	private async duplicateTab(tabId: string): Promise<void> {
+		const tab = this.tabs.get(tabId);
+		if (!tab) return;
+		await this.createNewTab(tab.url);
+	}
+
 	private async createNewTab(url?: string): Promise<void> {
 		try {
 			const tab = await (rpc as any).request.createTab({ url });
-			this.tabs.set(tab.id, tab);
+			const tabInfo: TabInfo = {
+				...tab,
+				isPinned: false,
+			};
+			this.tabs.set(tab.id, tabInfo);
+			this.tabOrder.push(tab.id);
 
-			// Create electrobun-webview element for this tab
-			const webview = document.createElement(
-				"electrobun-webview",
-			) as WebviewTagElement;
+			// Create electrobun-webview element
+			const webview = document.createElement("electrobun-webview") as WebviewTagElement;
 			webview.setAttribute("src", tab.url);
 			webview.setAttribute("id", `webview-${tab.id}`);
 			webview.setAttribute("masks", "#bookmarks-dropdown");
 			webview.setAttribute("renderer", "cef");
 			webview.classList.add("tab-webview");
 
-			// Add webview to container
 			const container = document.getElementById("webview-container");
 			if (container) {
 				container.appendChild(webview);
@@ -255,7 +405,6 @@ class MultitabBrowser {
 
 			this.webviews.set(tab.id, webview);
 
-			// Set up webview event listeners
 			webview.addEventListener("page-title-updated", (e: any) => {
 				const updatedTab = this.tabs.get(tab.id);
 				if (updatedTab) {
@@ -272,28 +421,55 @@ class MultitabBrowser {
 				}
 			});
 
-			this.renderTab(tab);
+			this.renderAllTabs();
 			this.switchToTab(tab.id);
 		} catch (error) {
 			console.error("Failed to create tab:", error);
 		}
 	}
 
-	private renderTab(tab: any): void {
+	private renderAllTabs(): void {
 		const tabsContainer = document.getElementById("tabs-container");
+		if (!tabsContainer) return;
+		tabsContainer.innerHTML = "";
+
+		for (const tabId of this.tabOrder) {
+			const tab = this.tabs.get(tabId);
+			if (!tab) continue;
+			this.renderTab(tab, tabsContainer);
+		}
+	}
+
+	private renderTab(tab: TabInfo, container?: HTMLElement): void {
+		const tabsContainer = container || document.getElementById("tabs-container");
 		if (!tabsContainer) return;
 
 		const tabElement = document.createElement("div");
-		tabElement.className = "tab";
+		tabElement.className = `tab${tab.isPinned ? " pinned" : ""}${tab.id === this.activeTabId ? " active" : ""}`;
 		tabElement.id = `tab-${tab.id}`;
-		tabElement.innerHTML = `
-      <span class="tab-title">${this.truncateTitle(tab.title)}</span>
-      <button class="tab-close" data-tab-id="${tab.id}">×</button>
-    `;
+		tabElement.dataset["tabId"] = tab.id;
+
+		const favicon = tab.favicon || "🌐";
+		const titleHtml = tab.isPinned
+			? `<span class="tab-favicon">${favicon}</span>`
+			: `<span class="tab-favicon">${favicon}</span><span class="tab-title">${this.escapeHtml(this.truncateTitle(tab.title))}</span>`;
+
+		const closeHtml = tab.isPinned
+			? ""
+			: `<button class="tab-close" data-tab-id="${tab.id}">×</button>`;
+
+		tabElement.innerHTML = `${titleHtml}${closeHtml}`;
 
 		tabElement.addEventListener("click", (e) => {
 			if (!(e.target as HTMLElement).classList.contains("tab-close")) {
 				this.switchToTab(tab.id);
+			}
+		});
+
+		// Double-click to pin/unpin
+		tabElement.addEventListener("dblclick", (e) => {
+			if (!(e.target as HTMLElement).classList.contains("tab-close")) {
+				this.togglePinTab(tab.id);
 			}
 		});
 
@@ -307,20 +483,16 @@ class MultitabBrowser {
 
 	private async switchToTab(tabId: string): Promise<void> {
 		try {
-			// Update UI immediately
 			document.querySelectorAll(".tab").forEach((tab) => {
 				tab.classList.remove("active");
 			});
 			document.getElementById(`tab-${tabId}`)?.classList.add("active");
 
-			// Hide all webviews
 			this.webviews.forEach((webview) => {
-				// webview.classList.remove('active');
 				webview.toggleHidden(true);
 				webview.togglePassthrough(true);
 			});
 
-			// Show the selected webview
 			const selectedWebview = this.webviews.get(tabId);
 			if (selectedWebview) {
 				selectedWebview.classList.add("active");
@@ -336,12 +508,10 @@ class MultitabBrowser {
 				if (urlBar) {
 					urlBar.value = tab.url;
 				}
-
 				this.updateBookmarkButton();
 				this.hideWelcomeScreen();
 			}
 
-			// Notify backend about tab switch (optional)
 			await (rpc as any).request.activateTab({ tabId });
 		} catch (error) {
 			console.error("Failed to switch tab:", error);
@@ -350,60 +520,55 @@ class MultitabBrowser {
 
 	private async closeTab(tabId: string): Promise<void> {
 		try {
-			console.log(
-				`Closing tab ${tabId}, active tab: ${this.activeTabId}, total tabs before: ${this.tabs.size}`,
-			);
+			const tab = this.tabs.get(tabId);
+			if (tab?.isPinned) return; // Can't close pinned tabs
 
 			await (rpc as any).request.closeTab({ id: tabId });
 			this.tabs.delete(tabId);
 
-			// Remove the webview element
 			const webview = this.webviews.get(tabId);
 			if (webview) {
 				webview.remove();
 				this.webviews.delete(tabId);
 			}
 
-			document.getElementById(`tab-${tabId}`)?.remove();
+			const orderIdx = this.tabOrder.indexOf(tabId);
+			if (orderIdx !== -1) {
+				this.tabOrder.splice(orderIdx, 1);
+			}
 
-			const remainingTabs = Array.from(this.tabs.keys());
-			console.log(
-				`Remaining tabs after close: ${remainingTabs.length}`,
-				remainingTabs,
-			);
+			this.renderAllTabs();
 
-			// Check if this was the active tab
 			if (this.activeTabId === tabId) {
-				console.log("Closed the active tab");
 				this.activeTabId = null;
-
-				if (remainingTabs.length > 0) {
-					console.log(
-						"Switching to remaining tab:",
-						remainingTabs[remainingTabs.length - 1],
-					);
-					this.switchToTab(remainingTabs[remainingTabs.length - 1]);
+				if (this.tabOrder.length > 0) {
+					// Switch to the tab at the same position or the last one
+					const nextIdx = Math.min(orderIdx, this.tabOrder.length - 1);
+					this.switchToTab(this.tabOrder[nextIdx]);
 				} else {
-					console.log("No tabs left - showing welcome screen");
 					this.showWelcomeScreen();
 				}
-			} else {
-				console.log("Closed a non-active tab");
-				if (remainingTabs.length === 0) {
-					console.log(
-						"No tabs left after closing non-active tab - showing welcome screen",
-					);
-					this.activeTabId = null;
-					this.showWelcomeScreen();
-				}
+			} else if (this.tabOrder.length === 0) {
+				this.activeTabId = null;
+				this.showWelcomeScreen();
 			}
 		} catch (error) {
 			console.error("Failed to close tab:", error);
 		}
 	}
 
-	public handleTabUpdate(tab: any): void {
-		this.tabs.set(tab.id, tab);
+	public handleTabUpdate(tab: TabInfo): void {
+		const existing = this.tabs.get(tab.id);
+		if (existing) {
+			existing.title = tab.title;
+			existing.url = tab.url;
+			existing.isLoading = tab.isLoading;
+			existing.canGoBack = tab.canGoBack;
+			existing.canGoForward = tab.canGoForward;
+			if (tab.favicon) existing.favicon = tab.favicon;
+		} else {
+			this.tabs.set(tab.id, { ...tab, isPinned: false });
+		}
 
 		const tabElement = document.getElementById(`tab-${tab.id}`);
 		if (tabElement) {
@@ -424,6 +589,8 @@ class MultitabBrowser {
 
 	public handleTabClosed(id: string): void {
 		this.tabs.delete(id);
+		const orderIdx = this.tabOrder.indexOf(id);
+		if (orderIdx !== -1) this.tabOrder.splice(orderIdx, 1);
 		document.getElementById(`tab-${id}`)?.remove();
 	}
 
@@ -432,7 +599,6 @@ class MultitabBrowser {
 		const webview = document.getElementById("webview-container");
 		if (welcome) welcome.style.display = "flex";
 		if (webview) webview.style.display = "none";
-
 		const urlBar = document.getElementById("url-bar") as HTMLInputElement;
 		if (urlBar) urlBar.value = "";
 	}
@@ -449,26 +615,25 @@ class MultitabBrowser {
 		return title.substring(0, maxLength - 3) + "...";
 	}
 
+	private escapeHtml(text: string): string {
+		const div = document.createElement("div");
+		div.textContent = text;
+		return div.innerHTML;
+	}
+
+	// --- Bookmarks ---
 	private async loadBookmarks(): Promise<void> {
 		try {
-			// Load bookmarks from localStorage or backend
 			const stored = localStorage.getItem("bookmarks");
 			if (stored) {
 				const bookmarksArray = JSON.parse(stored);
-				bookmarksArray.forEach((bookmark: any) => {
+				bookmarksArray.forEach((bookmark: BookmarkInfo) => {
 					this.bookmarks.set(bookmark.url, bookmark);
 				});
 			} else {
-				// Add default bookmarks
 				this.addBookmark("Electrobun", "https://electrobun.dev");
-				this.addBookmark(
-					"Electrobun GitHub",
-					"https://github.com/blackboardsh/electrobun",
-				);
-				this.addBookmark(
-					"Yoav on Bluesky",
-					"https://bsky.app/profile/yoav.codes",
-				);
+				this.addBookmark("Electrobun GitHub", "https://github.com/blackboardsh/electrobun");
+				this.addBookmark("Yoav on Bluesky", "https://bsky.app/profile/yoav.codes");
 				this.addBookmark("Blackboard", "https://www.blackboard.sh");
 			}
 			this.renderBookmarks();
@@ -484,50 +649,33 @@ class MultitabBrowser {
 	}
 
 	private resetBookmarks(): void {
-		console.log("resetBookmarks called - resetting without confirmation");
-
-		// Clear existing bookmarks
 		this.bookmarks.clear();
 		localStorage.removeItem("bookmarks");
 
-		// Add default bookmarks with unique IDs
 		let counter = 0;
-		const addDefaultBookmark = (title: string, url: string) => {
-			const bookmark = {
+		const addDefault = (title: string, url: string) => {
+			const bookmark: BookmarkInfo = {
 				id: `bookmark-default-${counter++}`,
 				title,
 				url,
 				createdAt: Date.now() + counter,
 			};
 			this.bookmarks.set(url, bookmark);
-			console.log("Added bookmark:", bookmark);
 		};
 
-		addDefaultBookmark("Electrobun", "https://electrobun.dev");
-		addDefaultBookmark(
-			"Electrobun GitHub",
-			"https://github.com/blackboardsh/electrobun",
-		);
-		addDefaultBookmark(
-			"Yoav on Bluesky",
-			"https://bsky.app/profile/yoav.codes",
-		);
-		addDefaultBookmark("Blackboard", "https://www.blackboard.sh");
+		addDefault("Electrobun", "https://electrobun.dev");
+		addDefault("Electrobun GitHub", "https://github.com/blackboardsh/electrobun");
+		addDefault("Yoav on Bluesky", "https://bsky.app/profile/yoav.codes");
+		addDefault("Blackboard", "https://www.blackboard.sh");
 
-		// Save and re-render
 		this.saveBookmarks();
 		this.renderBookmarks();
 		this.renderQuickLinks();
 		this.updateBookmarkButton();
-
-		console.log(
-			"Bookmarks reset completed, total bookmarks:",
-			this.bookmarks.size,
-		);
 	}
 
 	private addBookmark(title: string, url: string): void {
-		const bookmark = {
+		const bookmark: BookmarkInfo = {
 			id: `bookmark-${Date.now()}`,
 			title,
 			url,
@@ -544,23 +692,18 @@ class MultitabBrowser {
 
 	private toggleBookmark(): void {
 		if (!this.activeTabId) return;
-
 		const tab = this.tabs.get(this.activeTabId);
 		if (!tab) return;
-
 		const bookmarkBtn = document.getElementById("bookmark-btn");
 		if (!bookmarkBtn) return;
 
 		if (this.bookmarks.has(tab.url)) {
-			// Remove bookmark
 			this.removeBookmark(tab.url);
 			bookmarkBtn.classList.remove("bookmarked");
 		} else {
-			// Add bookmark
 			this.addBookmark(tab.title || "Untitled", tab.url);
 			bookmarkBtn.classList.add("bookmarked");
 		}
-
 		this.renderBookmarks();
 		this.renderQuickLinks();
 	}
@@ -568,7 +711,6 @@ class MultitabBrowser {
 	private updateBookmarkButton(): void {
 		const bookmarkBtn = document.getElementById("bookmark-btn");
 		if (!bookmarkBtn || !this.activeTabId) return;
-
 		const tab = this.tabs.get(this.activeTabId);
 		if (tab && this.bookmarks.has(tab.url)) {
 			bookmarkBtn.classList.add("bookmarked");
@@ -580,25 +722,17 @@ class MultitabBrowser {
 	private toggleBookmarksMenu(): void {
 		const dropdown = document.getElementById("bookmarks-dropdown");
 		if (dropdown) {
-			console.log(
-				"Toggling bookmarks menu, current hidden:",
-				dropdown.classList.contains("hidden"),
-			);
 			dropdown.classList.toggle("hidden");
-		} else {
-			console.error("Bookmarks dropdown not found");
 		}
 	}
 
 	private renderBookmarks(): void {
 		const bookmarksList = document.getElementById("bookmarks-list");
 		if (!bookmarksList) return;
-
 		bookmarksList.innerHTML = "";
 
 		if (this.bookmarks.size === 0) {
-			bookmarksList.innerHTML =
-				'<div class="no-bookmarks">No bookmarks yet</div>';
+			bookmarksList.innerHTML = '<div class="no-bookmarks">No bookmarks yet</div>';
 			return;
 		}
 
@@ -606,37 +740,29 @@ class MultitabBrowser {
 			const item = document.createElement("div");
 			item.className = "bookmark-item";
 			item.innerHTML = `
-        <div class="bookmark-info">
-          <div class="bookmark-title">${bookmark.title}</div>
-          <div class="bookmark-url">${this.truncateUrl(bookmark.url)}</div>
-        </div>
-        <button class="bookmark-delete" data-url="${bookmark.url}">×</button>
-      `;
+				<div class="bookmark-info">
+					<div class="bookmark-title">${this.escapeHtml(bookmark.title)}</div>
+					<div class="bookmark-url">${this.escapeHtml(this.truncateUrl(bookmark.url))}</div>
+				</div>
+				<button class="bookmark-delete" data-url="${this.escapeHtml(bookmark.url)}">×</button>
+			`;
 
-			item
-				.querySelector(".bookmark-info")
-				?.addEventListener("click", async () => {
-					if (this.activeTabId) {
-						// Navigate current tab
-						const webview = this.webviews.get(this.activeTabId) as any;
-						if (webview) {
-							webview.src = bookmark.url;
-							const tab = this.tabs.get(this.activeTabId);
-							if (tab) {
-								tab.url = bookmark.url;
-								this.handleTabUpdate(tab);
-							}
+			item.querySelector(".bookmark-info")?.addEventListener("click", async () => {
+				if (this.activeTabId) {
+					const webview = this.webviews.get(this.activeTabId) as any;
+					if (webview) {
+						webview.src = bookmark.url;
+						const tab = this.tabs.get(this.activeTabId);
+						if (tab) {
+							tab.url = bookmark.url;
+							this.handleTabUpdate(tab);
 						}
-					} else {
-						// Create new tab with bookmark
-						await this.createNewTab(bookmark.url);
 					}
-					// Hide dropdown
-					const dropdown = document.getElementById("bookmarks-dropdown");
-					if (dropdown) {
-						dropdown.classList.add("hidden");
-					}
-				});
+				} else {
+					await this.createNewTab(bookmark.url);
+				}
+				document.getElementById("bookmarks-dropdown")?.classList.add("hidden");
+			});
 
 			item.querySelector(".bookmark-delete")?.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -656,18 +782,16 @@ class MultitabBrowser {
 	private renderQuickLinks(): void {
 		const container = document.getElementById("quick-links-container");
 		if (!container) return;
-
 		container.innerHTML = "";
 
-		// Show first 6 bookmarks as quick links
 		const bookmarksArray = Array.from(this.bookmarks.values());
 		bookmarksArray.slice(0, 6).forEach((bookmark) => {
 			const link = document.createElement("button");
 			link.className = "quick-link";
 			link.innerHTML = `
-        <div class="quick-link-favicon">🌐</div>
-        <div class="quick-link-title">${this.truncateTitle(bookmark.title, 15)}</div>
-      `;
+				<div class="quick-link-favicon">🌐</div>
+				<div class="quick-link-title">${this.escapeHtml(this.truncateTitle(bookmark.title, 15))}</div>
+			`;
 			link.addEventListener("click", () => {
 				this.createNewTab(bookmark.url);
 			});
