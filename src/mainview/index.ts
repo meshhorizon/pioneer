@@ -12,13 +12,11 @@ const rpc = Electroview.defineRPC<any>({
 		requests: {},
 		messages: {
 			tabUpdated: (tab: any) => {
-				console.log("Tab updated:", tab);
 				if ((window as any).multitabBrowser) {
 					(window as any).multitabBrowser.handleTabUpdate(tab);
 				}
 			},
 			tabClosed: ({ id }: { id: string }) => {
-				console.log("Tab closed:", id);
 				if ((window as any).multitabBrowser) {
 					(window as any).multitabBrowser.handleTabClosed(id);
 				}
@@ -36,11 +34,13 @@ class MultitabBrowser {
 	private webviews: Map<string, WebviewTagElement> = new Map();
 	private activeTabId: string | null = null;
 	private bookmarks: Map<string, any> = new Map();
+	private history: { title: string; url: string; timestamp: number }[] = [];
+	private selectedSuggestionIndex = -1;
+	private progressTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor() {
-		// Store reference globally for RPC message handlers
 		(window as any).multitabBrowser = this;
-
+		this.loadHistory();
 		this.initializeUI();
 		this.loadBookmarks();
 	}
@@ -51,50 +51,73 @@ class MultitabBrowser {
 			this.createNewTab();
 		});
 
-		// URL bar navigation
+		// URL bar with autocomplete
 		const urlBar = document.getElementById("url-bar") as HTMLInputElement;
-		urlBar?.addEventListener("keypress", async (e) => {
-			if (e.key === "Enter") {
-				const url = urlBar.value.trim();
-				if (url) {
-					try {
-						// Process URL
-						let processedUrl = url;
-						if (!url.startsWith("http://") && !url.startsWith("https://")) {
-							if (url.includes(".") && !url.includes(" ")) {
-								processedUrl = `https://${url}`;
-							} else {
-								processedUrl = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-							}
-						}
 
-						// If no active tab, create a new one with this URL
-						if (!this.activeTabId) {
-							await this.createNewTab(processedUrl);
-							return;
-						}
+		urlBar?.addEventListener("input", () => {
+			this.showSuggestions(urlBar.value.trim());
+		});
 
-						// Navigate the existing webview
-						const webview = this.webviews.get(this.activeTabId) as any;
-						if (webview) {
-							webview.src = processedUrl;
-						}
+		urlBar?.addEventListener("focus", () => {
+			urlBar.select();
+			if (urlBar.value.trim()) {
+				this.showSuggestions(urlBar.value.trim());
+			}
+		});
 
-						// Update tab info
-						const tab = this.tabs.get(this.activeTabId);
-						if (tab) {
-							tab.url = processedUrl;
-							this.handleTabUpdate(tab);
-						}
+		urlBar?.addEventListener("blur", () => {
+			// Delay to allow click on suggestions
+			setTimeout(() => {
+				this.hideSuggestions();
+			}, 200);
+		});
 
-						await (rpc as any).request.navigateTo({
-							tabId: this.activeTabId,
-							url: processedUrl,
-						});
-					} catch (error) {
-						console.error("Failed to navigate:", error);
+		urlBar?.addEventListener("keydown", (e) => {
+			const suggestions = document.getElementById("url-suggestions");
+			const items = suggestions?.querySelectorAll(".url-suggestion-item");
+
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				if (items && items.length > 0) {
+					this.selectedSuggestionIndex = Math.min(
+						this.selectedSuggestionIndex + 1,
+						items.length - 1,
+					);
+					this.updateSuggestionSelection(items);
+				}
+			} else if (e.key === "ArrowUp") {
+				e.preventDefault();
+				if (items && items.length > 0) {
+					this.selectedSuggestionIndex = Math.max(
+						this.selectedSuggestionIndex - 1,
+						-1,
+					);
+					this.updateSuggestionSelection(items);
+				}
+			} else if (e.key === "Enter") {
+				e.preventDefault();
+				if (
+					this.selectedSuggestionIndex >= 0 &&
+					items &&
+					items[this.selectedSuggestionIndex]
+				) {
+					const item = items[this.selectedSuggestionIndex] as HTMLElement;
+					const url = item.dataset["url"];
+					if (url) {
+						urlBar.value = url;
+						this.hideSuggestions();
+						this.navigateUrl(url);
+						return;
 					}
 				}
+				const url = urlBar.value.trim();
+				if (url) {
+					this.hideSuggestions();
+					this.navigateUrl(url);
+				}
+			} else if (e.key === "Escape") {
+				this.hideSuggestions();
+				urlBar.blur();
 			}
 		});
 
@@ -108,38 +131,30 @@ class MultitabBrowser {
 			}
 		});
 
-		document
-			.getElementById("forward-btn")
-			?.addEventListener("click", async () => {
-				if (this.activeTabId) {
-					const webview = this.webviews.get(this.activeTabId) as any;
-					if (webview && webview.goForward) {
-						webview.goForward();
-					}
+		document.getElementById("forward-btn")?.addEventListener("click", async () => {
+			if (this.activeTabId) {
+				const webview = this.webviews.get(this.activeTabId) as any;
+				if (webview && webview.goForward) {
+					webview.goForward();
 				}
-			});
+			}
+		});
 
-		document
-			.getElementById("reload-btn")
-			?.addEventListener("click", async () => {
-				if (this.activeTabId) {
-					const webview = this.webviews.get(this.activeTabId) as any;
-					if (webview && webview.reload) {
-						webview.reload();
-					}
+		document.getElementById("reload-btn")?.addEventListener("click", async () => {
+			if (this.activeTabId) {
+				const webview = this.webviews.get(this.activeTabId) as any;
+				if (webview && webview.reload) {
+					webview.reload();
 				}
-			});
+			}
+		});
 
 		document.getElementById("home-btn")?.addEventListener("click", async () => {
 			const homeUrl = "https://electrobun.dev";
-
 			if (this.activeTabId) {
-				// Navigate existing tab to home
 				const webview = this.webviews.get(this.activeTabId) as any;
 				if (webview) {
 					webview.src = homeUrl;
-
-					// Update tab info
 					const tab = this.tabs.get(this.activeTabId);
 					if (tab) {
 						tab.url = homeUrl;
@@ -147,7 +162,6 @@ class MultitabBrowser {
 					}
 				}
 			} else {
-				// Create new tab with home URL
 				await this.createNewTab(homeUrl);
 			}
 		});
@@ -158,20 +172,16 @@ class MultitabBrowser {
 		});
 
 		// Bookmarks menu button
-		const bookmarksMenuBtn = document.getElementById("bookmarks-menu-btn");
-		console.log("Found bookmarks menu button:", bookmarksMenuBtn);
-		bookmarksMenuBtn?.addEventListener("click", (e) => {
-			console.log("Bookmarks menu button clicked");
+		document.getElementById("bookmarks-menu-btn")?.addEventListener("click", (e) => {
 			e.stopPropagation();
 			this.toggleBookmarksMenu();
 		});
 
-		// Reset bookmarks button (delegate to handle dynamically added buttons)
+		// Reset bookmarks button
 		document.addEventListener("click", (e) => {
 			if ((e.target as HTMLElement)?.id === "reset-bookmarks-btn") {
 				e.preventDefault();
 				e.stopPropagation();
-				console.log("Reset button clicked");
 				this.resetBookmarks();
 			}
 		});
@@ -191,63 +201,308 @@ class MultitabBrowser {
 			}
 		});
 
-		// Keyboard shortcuts - support both Cmd (Mac) and Ctrl (Windows/Linux)
+		// Keyboard shortcuts
 		document.addEventListener("keydown", (e) => {
 			const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
-			const modifierPressed = isMac ? e.metaKey : e.ctrlKey;
+			const mod = isMac ? e.metaKey : e.ctrlKey;
 
-			// Also support the opposite modifier for cross-platform compatibility
-			const altModifierPressed = isMac ? e.ctrlKey : e.metaKey;
-
-			if (
-				(modifierPressed || altModifierPressed) &&
-				e.key.toLowerCase() === "t"
-			) {
+			if (mod && e.key.toLowerCase() === "t") {
 				e.preventDefault();
 				this.createNewTab();
 			}
 
-			if (
-				(modifierPressed || altModifierPressed) &&
-				e.key.toLowerCase() === "w"
-			) {
+			if (mod && e.key.toLowerCase() === "w") {
 				e.preventDefault();
 				if (this.activeTabId) {
 					this.closeTab(this.activeTabId);
 				}
 			}
 
-			if (
-				(modifierPressed || altModifierPressed) &&
-				e.key.toLowerCase() === "l"
-			) {
+			if (mod && e.key.toLowerCase() === "l") {
 				e.preventDefault();
 				const urlBar = document.getElementById("url-bar") as HTMLInputElement;
 				urlBar?.focus();
 				urlBar?.select();
 			}
+
+			if (mod && e.key.toLowerCase() === "r") {
+				e.preventDefault();
+				if (this.activeTabId) {
+					const webview = this.webviews.get(this.activeTabId) as any;
+					if (webview && webview.reload) {
+						webview.reload();
+					}
+				}
+			}
 		});
 
-		// Show welcome screen initially
 		this.showWelcomeScreen();
 	}
 
+	// --- URL processing ---
+	private processUrl(url: string): string {
+		if (url.startsWith("http://") || url.startsWith("https://")) {
+			return url;
+		}
+
+		// Check if it looks like a domain name
+		const domainPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+/;
+		if (domainPattern.test(url) && !url.includes(" ")) {
+			return `https://${url}`;
+		}
+
+		// Check for localhost
+		if (url.startsWith("localhost") || url.match(/^127\.\d+\.\d+\.\d+/)) {
+			return `http://${url}`;
+		}
+
+		// Treat as search query
+		return `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+	}
+
+	private async navigateUrl(input: string): Promise<void> {
+		const url = this.processUrl(input);
+
+		if (!this.activeTabId) {
+			await this.createNewTab(url);
+			return;
+		}
+
+		const webview = this.webviews.get(this.activeTabId) as any;
+		if (webview) {
+			webview.src = url;
+		}
+
+		const tab = this.tabs.get(this.activeTabId);
+		if (tab) {
+			tab.url = url;
+			tab.isLoading = true;
+			this.handleTabUpdate(tab);
+		}
+
+		this.showProgress();
+
+		try {
+			await (rpc as any).request.navigateTo({
+				tabId: this.activeTabId,
+				url,
+			});
+		} catch (error) {
+			console.error("Failed to navigate:", error);
+		}
+
+		// Add to history
+		this.addToHistory(tab?.title || url, url);
+	}
+
+	// --- Security indicator ---
+	private updateSecurityIndicator(url: string): void {
+		const icon = document.getElementById("url-security-icon");
+		if (!icon) return;
+
+		icon.className = "url-security-icon";
+		if (url.startsWith("https://")) {
+			icon.classList.add("secure");
+			icon.title = "Secure connection (HTTPS)";
+		} else if (url.startsWith("http://")) {
+			icon.classList.add("insecure");
+			icon.title = "Not secure (HTTP)";
+		} else {
+			icon.title = "Enter a URL or search";
+		}
+	}
+
+	// --- Progress bar ---
+	private showProgress(): void {
+		const progress = document.getElementById("nav-progress");
+		const bar = document.getElementById("nav-progress-bar");
+		if (!progress || !bar) return;
+
+		progress.classList.remove("hidden");
+		bar.classList.add("indeterminate");
+		bar.style.width = "";
+
+		if (this.progressTimer) {
+			clearTimeout(this.progressTimer);
+		}
+
+		// Auto-hide after 10s as fallback
+		this.progressTimer = setTimeout(() => {
+			this.hideProgress();
+		}, 10000);
+	}
+
+	private hideProgress(): void {
+		const progress = document.getElementById("nav-progress");
+		const bar = document.getElementById("nav-progress-bar");
+		if (!progress || !bar) return;
+
+		bar.classList.remove("indeterminate");
+		bar.style.width = "100%";
+		setTimeout(() => {
+			progress.classList.add("hidden");
+			bar.style.width = "0%";
+		}, 300);
+
+		if (this.progressTimer) {
+			clearTimeout(this.progressTimer);
+			this.progressTimer = null;
+		}
+	}
+
+	// --- URL Suggestions ---
+	private showSuggestions(query: string): void {
+		if (!query) {
+			this.hideSuggestions();
+			return;
+		}
+
+		const suggestions = this.getSuggestions(query);
+		const container = document.getElementById("url-suggestions");
+		if (!container) return;
+
+		if (suggestions.length === 0) {
+			this.hideSuggestions();
+			return;
+		}
+
+		container.innerHTML = "";
+		this.selectedSuggestionIndex = -1;
+
+		suggestions.forEach((suggestion) => {
+			const item = document.createElement("div");
+			item.className = "url-suggestion-item";
+			item.dataset["url"] = suggestion.url;
+
+			const icon = suggestion.type === "bookmark" ? "⭐" : suggestion.type === "history" ? "🕐" : "🔍";
+
+			item.innerHTML = `
+				<span class="suggestion-icon">${icon}</span>
+				<span class="suggestion-text">${this.escapeHtml(suggestion.title)}</span>
+				<span class="suggestion-url">${this.escapeHtml(suggestion.url)}</span>
+			`;
+
+			item.addEventListener("mousedown", (e) => {
+				e.preventDefault();
+				const urlBar = document.getElementById("url-bar") as HTMLInputElement;
+				if (urlBar) {
+					urlBar.value = suggestion.url;
+				}
+				this.hideSuggestions();
+				this.navigateUrl(suggestion.url);
+			});
+
+			container.appendChild(item);
+		});
+
+		container.classList.remove("hidden");
+	}
+
+	private hideSuggestions(): void {
+		const container = document.getElementById("url-suggestions");
+		if (container) {
+			container.classList.add("hidden");
+		}
+		this.selectedSuggestionIndex = -1;
+	}
+
+	private updateSuggestionSelection(items: NodeListOf<Element>): void {
+		items.forEach((item, index) => {
+			if (index === this.selectedSuggestionIndex) {
+				item.classList.add("selected");
+				const urlBar = document.getElementById("url-bar") as HTMLInputElement;
+				if (urlBar) {
+					urlBar.value = (item as HTMLElement).dataset["url"] || "";
+				}
+			} else {
+				item.classList.remove("selected");
+			}
+		});
+	}
+
+	private getSuggestions(query: string): { title: string; url: string; type: string }[] {
+		const lowerQuery = query.toLowerCase();
+		const results: { title: string; url: string; type: string; score: number }[] = [];
+
+		// Search bookmarks
+		this.bookmarks.forEach((bookmark) => {
+			const titleMatch = bookmark.title.toLowerCase().includes(lowerQuery);
+			const urlMatch = bookmark.url.toLowerCase().includes(lowerQuery);
+			if (titleMatch || urlMatch) {
+				results.push({
+					title: bookmark.title,
+					url: bookmark.url,
+					type: "bookmark",
+					score: titleMatch ? 2 : 1,
+				});
+			}
+		});
+
+		// Search history
+		this.history.forEach((entry) => {
+			const titleMatch = entry.title.toLowerCase().includes(lowerQuery);
+			const urlMatch = entry.url.toLowerCase().includes(lowerQuery);
+			if (titleMatch || urlMatch) {
+				// Don't duplicate bookmarks
+				if (!results.some((r) => r.url === entry.url)) {
+					results.push({
+						title: entry.title,
+						url: entry.url,
+						type: "history",
+						score: titleMatch ? 1.5 : 0.5,
+					});
+				}
+			}
+		});
+
+		// Sort by score descending
+		results.sort((a, b) => b.score - a.score);
+		return results.slice(0, 8);
+	}
+
+	// --- History ---
+	private loadHistory(): void {
+		try {
+			const stored = localStorage.getItem("browsingHistory");
+			if (stored) {
+				this.history = JSON.parse(stored);
+			}
+		} catch (error) {
+			console.error("Failed to load history:", error);
+		}
+	}
+
+	private addToHistory(title: string, url: string): void {
+		// Don't add search URLs or duplicates of the last entry
+		if (this.history.length > 0 && this.history[0].url === url) return;
+
+		this.history.unshift({
+			title,
+			url,
+			timestamp: Date.now(),
+		});
+
+		// Keep last 1000 entries
+		if (this.history.length > 1000) {
+			this.history = this.history.slice(0, 1000);
+		}
+
+		localStorage.setItem("browsingHistory", JSON.stringify(this.history));
+	}
+
+	// --- Tab management ---
 	private async createNewTab(url?: string): Promise<void> {
 		try {
 			const tab = await (rpc as any).request.createTab({ url });
 			this.tabs.set(tab.id, tab);
 
-			// Create electrobun-webview element for this tab
-			const webview = document.createElement(
-				"electrobun-webview",
-			) as WebviewTagElement;
+			const webview = document.createElement("electrobun-webview") as WebviewTagElement;
 			webview.setAttribute("src", tab.url);
 			webview.setAttribute("id", `webview-${tab.id}`);
-			webview.setAttribute("masks", "#bookmarks-dropdown");
+			webview.setAttribute("masks", "#bookmarks-dropdown,#url-suggestions");
 			webview.setAttribute("renderer", "cef");
 			webview.classList.add("tab-webview");
 
-			// Add webview to container
 			const container = document.getElementById("webview-container");
 			if (container) {
 				container.appendChild(webview);
@@ -255,7 +510,6 @@ class MultitabBrowser {
 
 			this.webviews.set(tab.id, webview);
 
-			// Set up webview event listeners
 			webview.addEventListener("page-title-updated", (e: any) => {
 				const updatedTab = this.tabs.get(tab.id);
 				if (updatedTab) {
@@ -268,7 +522,10 @@ class MultitabBrowser {
 				const updatedTab = this.tabs.get(tab.id);
 				if (updatedTab && e.detail?.url) {
 					updatedTab.url = e.detail.url;
+					updatedTab.isLoading = false;
 					this.handleTabUpdate(updatedTab);
+					this.hideProgress();
+					this.addToHistory(updatedTab.title, updatedTab.url);
 				}
 			});
 
@@ -287,9 +544,9 @@ class MultitabBrowser {
 		tabElement.className = "tab";
 		tabElement.id = `tab-${tab.id}`;
 		tabElement.innerHTML = `
-      <span class="tab-title">${this.truncateTitle(tab.title)}</span>
-      <button class="tab-close" data-tab-id="${tab.id}">×</button>
-    `;
+			<span class="tab-title">${this.escapeHtml(this.truncateTitle(tab.title))}</span>
+			<button class="tab-close" data-tab-id="${tab.id}">×</button>
+		`;
 
 		tabElement.addEventListener("click", (e) => {
 			if (!(e.target as HTMLElement).classList.contains("tab-close")) {
@@ -307,20 +564,16 @@ class MultitabBrowser {
 
 	private async switchToTab(tabId: string): Promise<void> {
 		try {
-			// Update UI immediately
 			document.querySelectorAll(".tab").forEach((tab) => {
 				tab.classList.remove("active");
 			});
 			document.getElementById(`tab-${tabId}`)?.classList.add("active");
 
-			// Hide all webviews
 			this.webviews.forEach((webview) => {
-				// webview.classList.remove('active');
 				webview.toggleHidden(true);
 				webview.togglePassthrough(true);
 			});
 
-			// Show the selected webview
 			const selectedWebview = this.webviews.get(tabId);
 			if (selectedWebview) {
 				selectedWebview.classList.add("active");
@@ -336,12 +589,11 @@ class MultitabBrowser {
 				if (urlBar) {
 					urlBar.value = tab.url;
 				}
-
+				this.updateSecurityIndicator(tab.url);
 				this.updateBookmarkButton();
 				this.hideWelcomeScreen();
 			}
 
-			// Notify backend about tab switch (optional)
 			await (rpc as any).request.activateTab({ tabId });
 		} catch (error) {
 			console.error("Failed to switch tab:", error);
@@ -350,14 +602,9 @@ class MultitabBrowser {
 
 	private async closeTab(tabId: string): Promise<void> {
 		try {
-			console.log(
-				`Closing tab ${tabId}, active tab: ${this.activeTabId}, total tabs before: ${this.tabs.size}`,
-			);
-
 			await (rpc as any).request.closeTab({ id: tabId });
 			this.tabs.delete(tabId);
 
-			// Remove the webview element
 			const webview = this.webviews.get(tabId);
 			if (webview) {
 				webview.remove();
@@ -367,35 +614,17 @@ class MultitabBrowser {
 			document.getElementById(`tab-${tabId}`)?.remove();
 
 			const remainingTabs = Array.from(this.tabs.keys());
-			console.log(
-				`Remaining tabs after close: ${remainingTabs.length}`,
-				remainingTabs,
-			);
 
-			// Check if this was the active tab
 			if (this.activeTabId === tabId) {
-				console.log("Closed the active tab");
 				this.activeTabId = null;
-
 				if (remainingTabs.length > 0) {
-					console.log(
-						"Switching to remaining tab:",
-						remainingTabs[remainingTabs.length - 1],
-					);
 					this.switchToTab(remainingTabs[remainingTabs.length - 1]);
 				} else {
-					console.log("No tabs left - showing welcome screen");
 					this.showWelcomeScreen();
 				}
-			} else {
-				console.log("Closed a non-active tab");
-				if (remainingTabs.length === 0) {
-					console.log(
-						"No tabs left after closing non-active tab - showing welcome screen",
-					);
-					this.activeTabId = null;
-					this.showWelcomeScreen();
-				}
+			} else if (remainingTabs.length === 0) {
+				this.activeTabId = null;
+				this.showWelcomeScreen();
 			}
 		} catch (error) {
 			console.error("Failed to close tab:", error);
@@ -418,7 +647,12 @@ class MultitabBrowser {
 			if (urlBar && document.activeElement !== urlBar) {
 				urlBar.value = tab.url;
 			}
+			this.updateSecurityIndicator(tab.url);
 			this.updateBookmarkButton();
+
+			if (!tab.isLoading) {
+				this.hideProgress();
+			}
 		}
 	}
 
@@ -432,9 +666,9 @@ class MultitabBrowser {
 		const webview = document.getElementById("webview-container");
 		if (welcome) welcome.style.display = "flex";
 		if (webview) webview.style.display = "none";
-
 		const urlBar = document.getElementById("url-bar") as HTMLInputElement;
 		if (urlBar) urlBar.value = "";
+		this.updateSecurityIndicator("");
 	}
 
 	private hideWelcomeScreen(): void {
@@ -449,9 +683,15 @@ class MultitabBrowser {
 		return title.substring(0, maxLength - 3) + "...";
 	}
 
+	private escapeHtml(text: string): string {
+		const div = document.createElement("div");
+		div.textContent = text;
+		return div.innerHTML;
+	}
+
+	// --- Bookmarks ---
 	private async loadBookmarks(): Promise<void> {
 		try {
-			// Load bookmarks from localStorage or backend
 			const stored = localStorage.getItem("bookmarks");
 			if (stored) {
 				const bookmarksArray = JSON.parse(stored);
@@ -459,16 +699,9 @@ class MultitabBrowser {
 					this.bookmarks.set(bookmark.url, bookmark);
 				});
 			} else {
-				// Add default bookmarks
 				this.addBookmark("Electrobun", "https://electrobun.dev");
-				this.addBookmark(
-					"Electrobun GitHub",
-					"https://github.com/blackboardsh/electrobun",
-				);
-				this.addBookmark(
-					"Yoav on Bluesky",
-					"https://bsky.app/profile/yoav.codes",
-				);
+				this.addBookmark("Electrobun GitHub", "https://github.com/blackboardsh/electrobun");
+				this.addBookmark("Yoav on Bluesky", "https://bsky.app/profile/yoav.codes");
 				this.addBookmark("Blackboard", "https://www.blackboard.sh");
 			}
 			this.renderBookmarks();
@@ -479,61 +712,38 @@ class MultitabBrowser {
 	}
 
 	private saveBookmarks(): void {
-		const bookmarksArray = Array.from(this.bookmarks.values());
-		localStorage.setItem("bookmarks", JSON.stringify(bookmarksArray));
+		localStorage.setItem("bookmarks", JSON.stringify(Array.from(this.bookmarks.values())));
 	}
 
 	private resetBookmarks(): void {
-		console.log("resetBookmarks called - resetting without confirmation");
-
-		// Clear existing bookmarks
 		this.bookmarks.clear();
 		localStorage.removeItem("bookmarks");
-
-		// Add default bookmarks with unique IDs
 		let counter = 0;
-		const addDefaultBookmark = (title: string, url: string) => {
-			const bookmark = {
+		const addDefault = (title: string, url: string) => {
+			this.bookmarks.set(url, {
 				id: `bookmark-default-${counter++}`,
 				title,
 				url,
 				createdAt: Date.now() + counter,
-			};
-			this.bookmarks.set(url, bookmark);
-			console.log("Added bookmark:", bookmark);
+			});
 		};
-
-		addDefaultBookmark("Electrobun", "https://electrobun.dev");
-		addDefaultBookmark(
-			"Electrobun GitHub",
-			"https://github.com/blackboardsh/electrobun",
-		);
-		addDefaultBookmark(
-			"Yoav on Bluesky",
-			"https://bsky.app/profile/yoav.codes",
-		);
-		addDefaultBookmark("Blackboard", "https://www.blackboard.sh");
-
-		// Save and re-render
+		addDefault("Electrobun", "https://electrobun.dev");
+		addDefault("Electrobun GitHub", "https://github.com/blackboardsh/electrobun");
+		addDefault("Yoav on Bluesky", "https://bsky.app/profile/yoav.codes");
+		addDefault("Blackboard", "https://www.blackboard.sh");
 		this.saveBookmarks();
 		this.renderBookmarks();
 		this.renderQuickLinks();
 		this.updateBookmarkButton();
-
-		console.log(
-			"Bookmarks reset completed, total bookmarks:",
-			this.bookmarks.size,
-		);
 	}
 
 	private addBookmark(title: string, url: string): void {
-		const bookmark = {
+		this.bookmarks.set(url, {
 			id: `bookmark-${Date.now()}`,
 			title,
 			url,
 			createdAt: Date.now(),
-		};
-		this.bookmarks.set(url, bookmark);
+		});
 		this.saveBookmarks();
 	}
 
@@ -544,23 +754,18 @@ class MultitabBrowser {
 
 	private toggleBookmark(): void {
 		if (!this.activeTabId) return;
-
 		const tab = this.tabs.get(this.activeTabId);
 		if (!tab) return;
-
 		const bookmarkBtn = document.getElementById("bookmark-btn");
 		if (!bookmarkBtn) return;
 
 		if (this.bookmarks.has(tab.url)) {
-			// Remove bookmark
 			this.removeBookmark(tab.url);
 			bookmarkBtn.classList.remove("bookmarked");
 		} else {
-			// Add bookmark
 			this.addBookmark(tab.title || "Untitled", tab.url);
 			bookmarkBtn.classList.add("bookmarked");
 		}
-
 		this.renderBookmarks();
 		this.renderQuickLinks();
 	}
@@ -568,7 +773,6 @@ class MultitabBrowser {
 	private updateBookmarkButton(): void {
 		const bookmarkBtn = document.getElementById("bookmark-btn");
 		if (!bookmarkBtn || !this.activeTabId) return;
-
 		const tab = this.tabs.get(this.activeTabId);
 		if (tab && this.bookmarks.has(tab.url)) {
 			bookmarkBtn.classList.add("bookmarked");
@@ -579,26 +783,16 @@ class MultitabBrowser {
 
 	private toggleBookmarksMenu(): void {
 		const dropdown = document.getElementById("bookmarks-dropdown");
-		if (dropdown) {
-			console.log(
-				"Toggling bookmarks menu, current hidden:",
-				dropdown.classList.contains("hidden"),
-			);
-			dropdown.classList.toggle("hidden");
-		} else {
-			console.error("Bookmarks dropdown not found");
-		}
+		if (dropdown) dropdown.classList.toggle("hidden");
 	}
 
 	private renderBookmarks(): void {
 		const bookmarksList = document.getElementById("bookmarks-list");
 		if (!bookmarksList) return;
-
 		bookmarksList.innerHTML = "";
 
 		if (this.bookmarks.size === 0) {
-			bookmarksList.innerHTML =
-				'<div class="no-bookmarks">No bookmarks yet</div>';
+			bookmarksList.innerHTML = '<div class="no-bookmarks">No bookmarks yet</div>';
 			return;
 		}
 
@@ -606,37 +800,29 @@ class MultitabBrowser {
 			const item = document.createElement("div");
 			item.className = "bookmark-item";
 			item.innerHTML = `
-        <div class="bookmark-info">
-          <div class="bookmark-title">${bookmark.title}</div>
-          <div class="bookmark-url">${this.truncateUrl(bookmark.url)}</div>
-        </div>
-        <button class="bookmark-delete" data-url="${bookmark.url}">×</button>
-      `;
+				<div class="bookmark-info">
+					<div class="bookmark-title">${this.escapeHtml(bookmark.title)}</div>
+					<div class="bookmark-url">${this.escapeHtml(this.truncateUrl(bookmark.url))}</div>
+				</div>
+				<button class="bookmark-delete" data-url="${this.escapeHtml(bookmark.url)}">×</button>
+			`;
 
-			item
-				.querySelector(".bookmark-info")
-				?.addEventListener("click", async () => {
-					if (this.activeTabId) {
-						// Navigate current tab
-						const webview = this.webviews.get(this.activeTabId) as any;
-						if (webview) {
-							webview.src = bookmark.url;
-							const tab = this.tabs.get(this.activeTabId);
-							if (tab) {
-								tab.url = bookmark.url;
-								this.handleTabUpdate(tab);
-							}
+			item.querySelector(".bookmark-info")?.addEventListener("click", async () => {
+				if (this.activeTabId) {
+					const webview = this.webviews.get(this.activeTabId) as any;
+					if (webview) {
+						webview.src = bookmark.url;
+						const tab = this.tabs.get(this.activeTabId);
+						if (tab) {
+							tab.url = bookmark.url;
+							this.handleTabUpdate(tab);
 						}
-					} else {
-						// Create new tab with bookmark
-						await this.createNewTab(bookmark.url);
 					}
-					// Hide dropdown
-					const dropdown = document.getElementById("bookmarks-dropdown");
-					if (dropdown) {
-						dropdown.classList.add("hidden");
-					}
-				});
+				} else {
+					await this.createNewTab(bookmark.url);
+				}
+				document.getElementById("bookmarks-dropdown")?.classList.add("hidden");
+			});
 
 			item.querySelector(".bookmark-delete")?.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -656,23 +842,22 @@ class MultitabBrowser {
 	private renderQuickLinks(): void {
 		const container = document.getElementById("quick-links-container");
 		if (!container) return;
-
 		container.innerHTML = "";
 
-		// Show first 6 bookmarks as quick links
-		const bookmarksArray = Array.from(this.bookmarks.values());
-		bookmarksArray.slice(0, 6).forEach((bookmark) => {
-			const link = document.createElement("button");
-			link.className = "quick-link";
-			link.innerHTML = `
-        <div class="quick-link-favicon">🌐</div>
-        <div class="quick-link-title">${this.truncateTitle(bookmark.title, 15)}</div>
-      `;
-			link.addEventListener("click", () => {
-				this.createNewTab(bookmark.url);
+		Array.from(this.bookmarks.values())
+			.slice(0, 6)
+			.forEach((bookmark) => {
+				const link = document.createElement("button");
+				link.className = "quick-link";
+				link.innerHTML = `
+					<div class="quick-link-favicon">🌐</div>
+					<div class="quick-link-title">${this.escapeHtml(this.truncateTitle(bookmark.title, 15))}</div>
+				`;
+				link.addEventListener("click", () => {
+					this.createNewTab(bookmark.url);
+				});
+				container.appendChild(link);
 			});
-			container.appendChild(link);
-		});
 	}
 
 	private truncateUrl(url: string, maxLength: number = 40): string {

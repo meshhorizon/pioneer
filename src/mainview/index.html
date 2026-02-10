@@ -40,7 +40,9 @@
             </div>
             
             <div class="url-container">
-                <input type="text" id="url-bar" placeholder="Enter URL or search..." />
+                <span id="url-security-icon" class="url-security-icon"></span>
+                <input type="text" id="url-bar" placeholder="Search or enter URL..." autocomplete="off" spellcheck="false" />
+                <div id="url-suggestions" class="url-suggestions hidden"></div>
             </div>
             
             <div class="nav-actions">
@@ -57,6 +59,11 @@
                     </svg>
                 </button>
             </div>
+        </div>
+
+        <!-- Loading Progress Bar -->
+        <div id="nav-progress" class="nav-progress hidden">
+            <div id="nav-progress-bar" class="nav-progress-bar"></div>
         </div>
 
         <!-- Bookmarks Dropdown -->
