@@ -1,0 +1,21 @@
+{
+	"name": "pioneer",
+	"version": "0.1.0",
+	"description": "Pioneer - A full-featured production web browser built with Electrobun",
+	"type": "module",
+	"scripts": {
+		"build": "electrobun build",
+		"dev": "electrobun dev",
+		"start": "bun run build && bun run dev",
+		"lint": "tsc --noEmit",
+		"test": "bun test",
+		"test:screenshots": "bun run scripts/screenshot-test.ts"
+	},
+	"dependencies": {
+		"electrobun": "1.12.1"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.9.3"
+	}
+}
