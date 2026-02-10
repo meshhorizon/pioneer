@@ -47,8 +47,33 @@ body {
 	min-width: 120px;
 	max-width: 240px;
 	cursor: pointer;
-	transition: background 0.2s;
+	transition: background 0.2s, transform 0.1s;
 	-webkit-app-region: no-drag;
+	position: relative;
+}
+
+.tab.pinned {
+	min-width: 40px;
+	max-width: 40px;
+	padding: 6px 8px;
+	justify-content: center;
+	background: #e8eef5;
+	border-color: #b0c4de;
+}
+
+.tab.pinned .tab-favicon {
+	margin-right: 0;
+}
+
+.tab.dragging {
+	opacity: 0.7;
+	z-index: 100;
+}
+
+.tab-favicon {
+	font-size: 14px;
+	margin-right: 6px;
+	flex-shrink: 0;
 }
 
 .tab:hover {
